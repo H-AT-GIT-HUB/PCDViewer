@@ -14,6 +14,8 @@ export default function PCDViewer({ url }: PCDViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  
+  // Point Cloud States
   const [pointSize, setPointSize] = useState<number>(0.01);
   const [basePointSize, setBasePointSize] = useState<number>(0.01);
   
@@ -21,10 +23,29 @@ export default function PCDViewer({ url }: PCDViewerProps) {
   const [edlEnabled, setEdlEnabled] = useState<boolean>(true);
   const [edlStrength, setEdlStrength] = useState<number>(2.0);
   const [edlRadius, setEdlRadius] = useState<number>(1.5);
+
+  // Moving Icon States
+  const [showIcon, setShowIcon] = useState<boolean>(true);
+  const [iconSpeed, setIconSpeed] = useState<number>(1.0);
   
+  // Refs for Three.js objects
   const pointsRef = useRef<THREE.Points | null>(null);
   const materialRef = useRef<THREE.PointsMaterial | null>(null);
   const edlPassRef = useRef<any>(null);
+  
+  // Refs for Moving Icon
+  const iconRef = useRef<THREE.Group | null>(null);
+  const trajectoryRef = useRef<THREE.LineLoop | null>(null);
+  const pathParamsRef = useRef<{centerX: number, centerZ: number, y: number, radius: number} | null>(null);
+  const angleRef = useRef<number>(0);
+  
+  // Mutable refs for state accessed inside animation loop
+  const showIconRef = useRef(showIcon);
+  const iconSpeedRef = useRef(iconSpeed);
+
+  // Sync states to refs
+  useEffect(() => { showIconRef.current = showIcon; }, [showIcon]);
+  useEffect(() => { iconSpeedRef.current = iconSpeed; }, [iconSpeed]);
 
   // Update point size dynamically
   useEffect(() => {
@@ -41,6 +62,12 @@ export default function PCDViewer({ url }: PCDViewerProps) {
       edlPassRef.current.uniforms.edlRadius.value = edlRadius;
     }
   }, [edlEnabled, edlStrength, edlRadius]);
+
+  // Update Icon visibility dynamically
+  useEffect(() => {
+    if (iconRef.current) iconRef.current.visible = showIcon;
+    if (trajectoryRef.current) trajectoryRef.current.visible = showIcon;
+  }, [showIcon]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -218,8 +245,62 @@ export default function PCDViewer({ url }: PCDViewerProps) {
         points.rotation.x = -Math.PI / 2;
         scene.add(points);
         
-        const axesHelper = new THREE.AxesHelper(boundingSphere ? boundingSphere.radius * 1.2 : 1);
-        scene.add(axesHelper);
+        // --- Calculate Bounding Box for the Moving Icon Path ---
+        points.updateMatrixWorld(true);
+        const box = new THREE.Box3().setFromObject(points);
+        const center = new THREE.Vector3();
+        box.getCenter(center);
+        const size = new THREE.Vector3();
+        box.getSize(size);
+        
+        const bottomY = box.min.y;
+        const pathRadius = Math.max(size.x, size.z) / 2 * 1.1; // 10% wider than the model
+        
+        pathParamsRef.current = {
+          centerX: center.x,
+          centerZ: center.z,
+          y: bottomY,
+          radius: pathRadius
+        };
+
+        // --- Create Moving Icon (A Sphere + Cone pointer) ---
+        const iconScale = (boundingSphere?.radius || 1) * 0.05;
+        const iconGroup = new THREE.Group();
+        
+        // Icon Body (Red Sphere)
+        const sphereGeo = new THREE.SphereGeometry(iconScale * 0.5, 16, 16);
+        const sphereMat = new THREE.MeshBasicMaterial({ color: 0xef4444 });
+        const sphere = new THREE.Mesh(sphereGeo, sphereMat);
+        
+        // Icon Pointer (Yellow Cone)
+        const coneGeo = new THREE.ConeGeometry(iconScale * 0.4, iconScale, 16);
+        const coneMat = new THREE.MeshBasicMaterial({ color: 0xfbbf24 });
+        const cone = new THREE.Mesh(coneGeo, coneMat);
+        cone.position.z = iconScale * 0.5; // Move cone forward
+        cone.rotation.x = Math.PI / 2;     // Point cone along +Z axis (forward direction for lookAt)
+        
+        iconGroup.add(sphere);
+        iconGroup.add(cone);
+        iconGroup.visible = showIconRef.current;
+        scene.add(iconGroup);
+        iconRef.current = iconGroup;
+
+        // --- Create Trajectory Line (Indigo Circle) ---
+        const trajPoints = [];
+        for (let i = 0; i <= 64; i++) {
+          const angle = (i / 64) * Math.PI * 2;
+          trajPoints.push(new THREE.Vector3(
+            center.x + pathRadius * Math.cos(angle),
+            bottomY,
+            center.z + pathRadius * Math.sin(angle)
+          ));
+        }
+        const trajGeo = new THREE.BufferGeometry().setFromPoints(trajPoints);
+        const trajMat = new THREE.LineBasicMaterial({ color: 0x6366f1, transparent: true, opacity: 0.5 });
+        const trajLine = new THREE.LineLoop(trajGeo, trajMat);
+        trajLine.visible = showIconRef.current;
+        scene.add(trajLine);
+        trajectoryRef.current = trajLine;
 
         setLoading(false);
       },
@@ -232,10 +313,33 @@ export default function PCDViewer({ url }: PCDViewerProps) {
     );
 
     // Animation Loop
+    let lastTime = performance.now();
     const animate = () => {
       animationFrameId = requestAnimationFrame(animate);
+      
+      const currentTime = performance.now();
+      const delta = (currentTime - lastTime) / 1000;
+      lastTime = currentTime;
+
+      // Update Moving Icon Position
+      if (iconRef.current && pathParamsRef.current && showIconRef.current) {
+        angleRef.current += iconSpeedRef.current * delta;
+        const p = pathParamsRef.current;
+        
+        // Current position
+        const x = p.centerX + p.radius * Math.cos(angleRef.current);
+        const z = p.centerZ + p.radius * Math.sin(angleRef.current);
+        
+        // Next position (slightly ahead) to determine where the icon should "look"
+        const nextX = p.centerX + p.radius * Math.cos(angleRef.current + 0.1);
+        const nextZ = p.centerZ + p.radius * Math.sin(angleRef.current + 0.1);
+        
+        iconRef.current.position.set(x, p.y, z);
+        iconRef.current.lookAt(nextX, p.y, nextZ);
+      }
+
       controls.update();
-      composer.render(); // Use composer instead of renderer
+      composer.render(); // Use composer instead of renderer for EDL
     };
     animate();
 
@@ -252,6 +356,21 @@ export default function PCDViewer({ url }: PCDViewerProps) {
         } else {
           pointsRef.current.material.dispose();
         }
+      }
+
+      if (iconRef.current) {
+        scene.remove(iconRef.current);
+        // Clean up icon geometries/materials
+        iconRef.current.children.forEach((child: any) => {
+          if (child.geometry) child.geometry.dispose();
+          if (child.material) child.material.dispose();
+        });
+      }
+
+      if (trajectoryRef.current) {
+        scene.remove(trajectoryRef.current);
+        trajectoryRef.current.geometry.dispose();
+        (trajectoryRef.current.material as THREE.Material).dispose();
       }
       
       composer.dispose();
@@ -284,7 +403,7 @@ export default function PCDViewer({ url }: PCDViewerProps) {
       
       <div ref={containerRef} className="flex-1 w-full" />
       
-      <div className="absolute bottom-4 left-4 bg-zinc-900/80 backdrop-blur-sm border border-zinc-800 p-4 rounded-lg flex flex-col gap-3 min-w-[240px]">
+      <div className="absolute bottom-4 left-4 bg-zinc-900/80 backdrop-blur-sm border border-zinc-800 p-4 rounded-lg flex flex-col gap-3 min-w-[240px] max-h-[80vh] overflow-y-auto">
         <div className="text-xs text-zinc-400 space-y-1">
           <p>Left Click: Rotate</p>
           <p>Right Click: Pan</p>
@@ -349,6 +468,35 @@ export default function PCDViewer({ url }: PCDViewerProps) {
             </div>
           )}
         </div>
+
+        <div className="border-t border-zinc-800 pt-3">
+          <label className="flex items-center gap-2 text-xs text-zinc-300 mb-3 cursor-pointer">
+            <input 
+              type="checkbox" 
+              checked={showIcon}
+              onChange={(e) => setShowIcon(e.target.checked)}
+              className="accent-indigo-500 rounded"
+            />
+            Show Moving Icon
+          </label>
+          
+          {showIcon && (
+            <div>
+              <label className="text-xs text-zinc-400 flex justify-between mb-1">
+                <span>Move Speed</span>
+                <span>{iconSpeed.toFixed(1)}x</span>
+              </label>
+              <input 
+                type="range" 
+                min="0.1" max="5" step="0.1"
+                value={iconSpeed}
+                onChange={(e) => setIconSpeed(parseFloat(e.target.value))}
+                className="w-full accent-indigo-500"
+              />
+            </div>
+          )}
+        </div>
+
       </div>
     </div>
   );
