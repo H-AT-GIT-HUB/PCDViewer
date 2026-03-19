@@ -1,0 +1,5 @@
+{
+  "name": "PCD Viewer",
+  "description": "A local .pcd (Point Cloud Data) file viewer built with Three.js.",
+  "requestFramePermissions": []
+}
