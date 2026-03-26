@@ -5,6 +5,7 @@ import { PCDLoader } from 'three/examples/jsm/loaders/PCDLoader.js';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 
 interface PCDViewerProps {
   url: string;
@@ -28,8 +29,8 @@ export default function PCDViewer({ url }: PCDViewerProps) {
   
   // EDL States
   const [edlEnabled, setEdlEnabled] = useState<boolean>(false);
-  const [edlStrength, setEdlStrength] = useState<number>(0.1);
-  const [edlRadius, setEdlRadius] = useState<number>(1);
+  const [edlStrength, setEdlStrength] = useState<number>(5);
+  const [edlRadius, setEdlRadius] = useState<number>(2);
 
   // Moving Icon States
   const [showIcon, setShowIcon] = useState<boolean>(false);
@@ -121,7 +122,9 @@ export default function PCDViewer({ url }: PCDViewerProps) {
     container.appendChild(renderer.domElement);
 
     // Setup Post-Processing for EDL
-    const target = new THREE.WebGLRenderTarget(container.clientWidth, container.clientHeight);
+    const target = new THREE.WebGLRenderTarget(container.clientWidth, container.clientHeight, {
+      type: THREE.HalfFloatType // 提升精度，避免颜色断层
+    });
     target.depthBuffer = true;
     target.depthTexture = new THREE.DepthTexture(container.clientWidth, container.clientHeight);
     target.depthTexture.type = THREE.UnsignedIntType;
@@ -164,7 +167,8 @@ export default function PCDViewer({ url }: PCDViewerProps) {
           vec4 texel = texture2D(tDiffuse, vUv);
           float depth = texture2D(tDepth, vUv).x;
 
-          if (depth == 1.0) {
+          // 修复背景变黑问题：剔除深度接近 1.0 的背景
+          if (depth >= 0.9999) {
             gl_FragColor = texel;
             return;
           }
@@ -173,21 +177,40 @@ export default function PCDViewer({ url }: PCDViewerProps) {
           float res = 0.0;
           vec2 texelSize = 1.0 / screenSize;
           
-          vec2 offsets[4];
-          offsets[0] = vec2(1.0, 0.0);
-          offsets[1] = vec2(-1.0, 0.0);
-          offsets[2] = vec2(0.0, 1.0);
-          offsets[3] = vec2(0.0, -1.0);
+          // 优化 1：扩展为 8 向采样（十字 + 对角线），让阴影轮廓更平滑、自然
+          vec2 offsets[8];
+          offsets[0] = vec2( 1.0,  0.0);
+          offsets[1] = vec2(-1.0,  0.0);
+          offsets[2] = vec2( 0.0,  1.0);
+          offsets[3] = vec2( 0.0, -1.0);
+          offsets[4] = vec2( 0.707,  0.707);
+          offsets[5] = vec2(-0.707, -0.707);
+          offsets[6] = vec2( 0.707, -0.707);
+          offsets[7] = vec2(-0.707,  0.707);
 
-          for(int i = 0; i < 4; i++) {
+          for(int i = 0; i < 8; i++) {
             float neighborDepth = texture2D(tDepth, vUv + offsets[i] * texelSize * edlRadius).x;
-            if (neighborDepth != 1.0) {
+            
+            // 不计算背景带来的深度差
+            if (neighborDepth < 0.9999) {
               float nz = perspectiveDepthToViewZ(neighborDepth, cameraNear, cameraFar);
-              res += max(0.0, nz - z);
+              
+              // Three.js 中 viewZ 是负值。如果邻居比当前点更靠近相机(nz > z)，则产生凹陷阴影
+              float diff = nz - z;
+              
+              // 优化 2：引入微小的 bias (0.001 * sceneScale)，过滤掉平整面上的细碎噪点
+              res += max(0.0, diff - 0.001 * sceneScale); 
             }
           }
 
-          float shade = exp(-res / sceneScale * edlStrength * 10.0);
+          // 优化 3：柔和的指数衰减
+          // 因为增加了采样点，所以稍微调整了乘数 (这里调为 15.0，你可以根据喜好微调)
+          float shadeWeight = (res / 8.0) / sceneScale * edlStrength * 150.0; 
+          float shade = exp(-shadeWeight);
+
+          // 优化 4：环境光保底限制。防止阴影死黑，最暗处保留 35% 的原色
+          shade = clamp(shade, 0.35, 1.0);
+
           gl_FragColor = vec4(texel.rgb * shade, texel.a);
         }
       `
@@ -198,6 +221,10 @@ export default function PCDViewer({ url }: PCDViewerProps) {
     edlPass.enabled = edlEnabled;
     composer.addPass(edlPass);
     edlPassRef.current = edlPass;
+
+    // 新增：在 composer 最后添加 OutputPass 修复颜色变黑和过饱和问题
+    const outputPass = new OutputPass();
+    composer.addPass(outputPass);
 
     // Setup Controls
     const controls = new OrbitControls(camera, renderer.domElement);
@@ -433,6 +460,13 @@ export default function PCDViewer({ url }: PCDViewerProps) {
       }
 
       controls.update();
+
+      // Fix WebGL Feedback Loop: Update depth texture reference dynamically
+      // because EffectComposer swaps read/write buffers between frames.
+      if (edlPassRef.current && composer.readBuffer) {
+        edlPassRef.current.uniforms.tDepth.value = composer.readBuffer.depthTexture;
+      }
+
       composer.render(); // Use composer instead of renderer for EDL
     };
     animate();
@@ -452,6 +486,7 @@ export default function PCDViewer({ url }: PCDViewerProps) {
           pointsRef.current.material.dispose();
         }
       }
+
 
       if (iconRef.current) {
         scene.remove(iconRef.current);
