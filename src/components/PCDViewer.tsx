@@ -116,9 +116,13 @@ export default function PCDViewer({ url }: PCDViewerProps) {
     scene.add(camera);
 
     // Setup Renderer
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setPixelRatio(window.devicePixelRatio);
+    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+    // Limit pixel ratio to 1.5 to drastically improve performance on high-DPI (Retina) screens
+    // without noticeable loss of quality for point clouds.
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5)); 
     renderer.setSize(container.clientWidth, container.clientHeight);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
     container.appendChild(renderer.domElement);
 
     // Setup Post-Processing for EDL
@@ -306,6 +310,17 @@ export default function PCDViewer({ url }: PCDViewerProps) {
         
         const material = points.material as THREE.PointsMaterial;
         materialRef.current = material;
+        
+        // Make points circular instead of square for better visual quality
+        material.onBeforeCompile = (shader) => {
+          shader.fragmentShader = shader.fragmentShader.replace(
+            'void main() {',
+            `void main() {
+              vec2 cxy = 2.0 * gl_PointCoord - 1.0;
+              if (dot(cxy, cxy) > 1.0) discard;
+            `
+          );
+        };
         
         if (!points.geometry.hasAttribute('color')) {
           material.color = new THREE.Color(0xffffff);
