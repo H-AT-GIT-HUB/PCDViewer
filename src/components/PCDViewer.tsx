@@ -102,7 +102,7 @@ export default function PCDViewer({ url }: PCDViewerProps) {
     
     // Setup Scene
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x09090b); // zinc-950
+    scene.background = new THREE.Color(0x0E2536); // zinc-950
 
     // Setup Camera
     const camera = new THREE.PerspectiveCamera(
