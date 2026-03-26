@@ -27,12 +27,12 @@ export default function PCDViewer({ url }: PCDViewerProps) {
   const [basePointSize, setBasePointSize] = useState<number>(0.01);
   
   // EDL States
-  const [edlEnabled, setEdlEnabled] = useState<boolean>(true);
-  const [edlStrength, setEdlStrength] = useState<number>(2.0);
-  const [edlRadius, setEdlRadius] = useState<number>(1.5);
+  const [edlEnabled, setEdlEnabled] = useState<boolean>(false);
+  const [edlStrength, setEdlStrength] = useState<number>(0.1);
+  const [edlRadius, setEdlRadius] = useState<number>(1);
 
   // Moving Icon States
-  const [showIcon, setShowIcon] = useState<boolean>(true);
+  const [showIcon, setShowIcon] = useState<boolean>(false);
   const [iconSpeed, setIconSpeed] = useState<number>(1.0);
 
   // Annotation States
@@ -302,7 +302,8 @@ export default function PCDViewer({ url }: PCDViewerProps) {
           controls.target.set(0, 0, 0);
           controls.maxDistance = radius * 50;
           
-          const defaultSize = radius * 0.005;
+          // const defaultSize = radius * 0.005;
+          const defaultSize = 0.01
           setBasePointSize(defaultSize);
           setPointSize(defaultSize);
           material.size = defaultSize;
@@ -609,11 +610,11 @@ export default function PCDViewer({ url }: PCDViewerProps) {
       
       {/* Control Panel */}
       <div className="absolute bottom-4 left-4 bg-zinc-900/80 backdrop-blur-sm border border-zinc-800 p-4 rounded-lg flex flex-col gap-3 min-w-[240px] max-h-[80vh] overflow-y-auto z-30">
-        <div className="text-xs text-zinc-400 space-y-1">
+        {/* <div className="text-xs text-zinc-400 space-y-1">
           <p>Left Click: Rotate</p>
           <p>Right Click: Pan</p>
           <p>Scroll: Zoom</p>
-        </div>
+        </div> */}
         
         <div className="border-t border-zinc-800 pt-3">
           <label className="text-xs text-zinc-300 flex justify-between mb-2">
@@ -623,7 +624,7 @@ export default function PCDViewer({ url }: PCDViewerProps) {
           <input 
             type="range" 
             min={basePointSize * 0.1} 
-            max={basePointSize * 20} 
+            max={basePointSize * 50} 
             step={basePointSize * 0.1}
             value={pointSize}
             onChange={(e) => setPointSize(parseFloat(e.target.value))}
@@ -647,11 +648,11 @@ export default function PCDViewer({ url }: PCDViewerProps) {
               <div>
                 <label className="text-xs text-zinc-400 flex justify-between mb-1">
                   <span>EDL Strength</span>
-                  <span>{edlStrength.toFixed(1)}</span>
+                  <span>{edlStrength.toFixed(4)}</span>
                 </label>
                 <input 
                   type="range" 
-                  min="0.1" max="10" step="0.1"
+                  min="0.001" max="10" step="0.001"
                   value={edlStrength}
                   onChange={(e) => setEdlStrength(parseFloat(e.target.value))}
                   className="w-full accent-indigo-500"
@@ -660,11 +661,11 @@ export default function PCDViewer({ url }: PCDViewerProps) {
               <div>
                 <label className="text-xs text-zinc-400 flex justify-between mb-1">
                   <span>EDL Radius</span>
-                  <span>{edlRadius.toFixed(1)}</span>
+                  <span>{edlRadius.toFixed(4)}</span>
                 </label>
                 <input 
                   type="range" 
-                  min="0.5" max="5" step="0.1"
+                  min="0" max="5" step="0.01"
                   value={edlRadius}
                   onChange={(e) => setEdlRadius(parseFloat(e.target.value))}
                   className="w-full accent-indigo-500"
@@ -674,7 +675,7 @@ export default function PCDViewer({ url }: PCDViewerProps) {
           )}
         </div>
 
-        <div className="border-t border-zinc-800 pt-3">
+        {/* <div className="border-t border-zinc-800 pt-3">
           <label className="flex items-center gap-2 text-xs text-zinc-300 mb-3 cursor-pointer">
             <input 
               type="checkbox" 
@@ -700,10 +701,10 @@ export default function PCDViewer({ url }: PCDViewerProps) {
               />
             </div>
           )}
-        </div>
+        </div> */}
 
         {/* Add Label Button */}
-        <div className="border-t border-zinc-800 pt-3 mt-1">
+        {/* <div className="border-t border-zinc-800 pt-3 mt-1">
           <button
             className={`w-full py-2 px-4 rounded text-sm font-medium transition-all ${
               isAddingLabel
@@ -719,7 +720,7 @@ export default function PCDViewer({ url }: PCDViewerProps) {
               Click anywhere on the point cloud to place a label.
             </p>
           )}
-        </div>
+        </div> */}
 
       </div>
     </div>
