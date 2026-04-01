@@ -41,11 +41,15 @@ export default function PCDViewer({ url }: PCDViewerProps) {
   const [isAddingLabel, setIsAddingLabel] = useState<boolean>(false);
   const [selectedAnnotation, setSelectedAnnotation] = useState<Annotation | null>(null);
   const [isEditing, setIsEditing] = useState<boolean>(false);
+  const [backgroundColor, setBackgroundColor] = useState<string>('#0E2536');
+  
   
   // Refs for Three.js objects
   const pointsRef = useRef<THREE.Points | null>(null);
   const materialRef = useRef<THREE.PointsMaterial | null>(null);
   const edlPassRef = useRef<any>(null);
+  const sceneRef = useRef<THREE.Scene | null>(null);
+  
   
   // Refs for Moving Icon
   const iconRef = useRef<THREE.Group | null>(null);
@@ -83,6 +87,14 @@ export default function PCDViewer({ url }: PCDViewerProps) {
     }
   }, [edlEnabled, edlStrength, edlRadius]);
 
+  // Update Background Color dynamically
+  useEffect(() => {
+    if (sceneRef.current) {
+      sceneRef.current.background = new THREE.Color(backgroundColor);
+    }
+  }, [backgroundColor]);
+  
+
   // Update Icon visibility dynamically
   useEffect(() => {
     if (iconRef.current) iconRef.current.visible = showIcon;
@@ -103,7 +115,9 @@ export default function PCDViewer({ url }: PCDViewerProps) {
     
     // Setup Scene
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x0E2536); // zinc-950
+    scene.background = new THREE.Color(backgroundColor); 
+    sceneRef.current = scene;
+    
 
     // Setup Camera
     const camera = new THREE.PerspectiveCamera(
@@ -204,7 +218,7 @@ export default function PCDViewer({ url }: PCDViewerProps) {
           }
 
           // 优化 3：柔和的指数衰减
-          // 因为增加了采样点，所以稍微调整了乘数 (这里调为 15.0，你可以根据喜好微调)
+          // 因为增加了采样点，所以稍微调整了乘数 (这里调为 15.0，可以根据喜好微调)
           float shadeWeight = (res / 8.0) / sceneScale * edlStrength * 150.0; 
           float shade = exp(-shadeWeight);
 
@@ -709,6 +723,33 @@ export default function PCDViewer({ url }: PCDViewerProps) {
             </div>
           )}
         </div>
+
+        <div className="border-t border-zinc-800 pt-3">
+          <label className="text-xs text-zinc-300 flex justify-between mb-2">
+            <span>Background Color</span>
+            <span className="uppercase text-[10px] font-mono text-zinc-500">{backgroundColor}</span>
+          </label>
+          <div className="flex items-center gap-2">
+            <input 
+              type="color" 
+              value={backgroundColor}
+              onChange={(e) => setBackgroundColor(e.target.value)}
+              className="w-8 h-8 rounded cursor-pointer bg-transparent border-none p-0 appearance-none"
+            />
+            <div className="flex-1 flex gap-1">
+              {['#0E2536', '#000000', '#FFFFFF', '#1E1E1E'].map(color => (
+                <button
+                  key={color}
+                  onClick={() => setBackgroundColor(color)}
+                  className={`w-5 h-5 rounded-full border border-zinc-700 transition-transform hover:scale-110 ${backgroundColor === color ? 'ring-2 ring-indigo-500 ring-offset-2 ring-offset-zinc-900' : ''}`}
+                  style={{ backgroundColor: color }}
+                  title={color}
+                />
+              ))}
+            </div>
+          </div>
+        </div>
+        
 
         {/* <div className="border-t border-zinc-800 pt-3">
           <label className="flex items-center gap-2 text-xs text-zinc-300 mb-3 cursor-pointer">
