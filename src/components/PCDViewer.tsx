@@ -41,6 +41,9 @@ export default function PCDViewer({ url }: PCDViewerProps) {
   const [bloomEnabled, setBloomEnabled] = useState<boolean>(true);
   const [bloomStrength, setBloomStrength] = useState<number>(1.2);
 
+  // Reflection States
+  const [reflectionEnabled, setReflectionEnabled] = useState<boolean>(true);
+
   // Moving Icon States
   const [showIcon, setShowIcon] = useState<boolean>(false);
   const [iconSpeed, setIconSpeed] = useState<number>(1.0);
@@ -55,8 +58,10 @@ export default function PCDViewer({ url }: PCDViewerProps) {
 
   // Refs for Three.js objects
   const pointsRef = useRef<THREE.Points | null>(null);
+  const reflectionPointsRef = useRef<THREE.Points | null>(null);
   const originalMaterialRef = useRef<THREE.PointsMaterial | null>(null);
   const glowMaterialRef = useRef<THREE.PointsMaterial | null>(null);
+  const reflectionMaterialRef = useRef<THREE.PointsMaterial | null>(null);
   const edlPassRef = useRef<any>(null);
   const bloomPassRef = useRef<any>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -108,6 +113,9 @@ export default function PCDViewer({ url }: PCDViewerProps) {
     if (glowMaterialRef.current) {
       glowMaterialRef.current.size = pointSize;
     }
+    if (reflectionMaterialRef.current) {
+      reflectionMaterialRef.current.size = pointSize * 4.0; // Make reflection points larger for a blurry look
+    }
   }, [pointSize]);
 
   // Update Point Opacity dynamically
@@ -115,14 +123,20 @@ export default function PCDViewer({ url }: PCDViewerProps) {
     if (glowMaterialRef.current) {
       glowMaterialRef.current.opacity = pointOpacity;
     }
+    if (reflectionMaterialRef.current) {
+      reflectionMaterialRef.current.opacity = pointOpacity * 0.4; // Reflection is dimmer
+    }
   }, [pointOpacity]);
 
-  // Swap materials dynamically
+  // Swap materials and toggle reflection dynamically
   useEffect(() => {
     if (pointsRef.current && originalMaterialRef.current && glowMaterialRef.current) {
       pointsRef.current.material = displayMode === 'original' ? originalMaterialRef.current : glowMaterialRef.current;
     }
-  }, [displayMode]);
+    if (reflectionPointsRef.current) {
+      reflectionPointsRef.current.visible = displayMode === 'glow' && reflectionEnabled;
+    }
+  }, [displayMode, reflectionEnabled]);
 
   // Update EDL parameters dynamically
   useEffect(() => {
@@ -394,6 +408,61 @@ export default function PCDViewer({ url }: PCDViewerProps) {
         points.geometry.center();
         points.geometry.computeBoundingSphere();
 
+        // --- Detect Real Ground Plane (Ignore noise below floor) ---
+        let groundZLocal = 0;
+        const positions = points.geometry.attributes.position.array;
+        const ptCount = positions.length / 3;
+        try {
+          const zValues = new Float32Array(ptCount);
+          let minZ = Infinity;
+          let maxZ = -Infinity;
+          for (let i = 0; i < ptCount; i++) {
+            const z = positions[i * 3 + 2];
+            zValues[i] = z;
+            if (z < minZ) minZ = z;
+            if (z > maxZ) maxZ = z;
+          }
+
+          const rangeZ = maxZ - minZ;
+          if (rangeZ > 0.001) {
+            const bottomRange = rangeZ * 0.2; // Look at bottom 20%
+            const numBins = 100;
+            const bins = new Int32Array(numBins);
+            const binSize = bottomRange / numBins;
+
+            for (let i = 0; i < ptCount; i++) {
+              const z = zValues[i];
+              if (z <= minZ + bottomRange) {
+                const binIdx = Math.floor((z - minZ) / binSize);
+                if (binIdx >= 0 && binIdx < numBins) {
+                  bins[binIdx]++;
+                }
+              }
+            }
+
+            let maxBinIdx = 0;
+            let maxBinCount = 0;
+            for (let i = 0; i < numBins; i++) {
+              if (bins[i] > maxBinCount) {
+                maxBinCount = bins[i];
+                maxBinIdx = i;
+              }
+            }
+
+            groundZLocal = minZ + maxBinIdx * binSize;
+          } else {
+            groundZLocal = minZ;
+          }
+        } catch (e) {
+          console.warn("Ground detection failed, falling back to bounding box", e);
+          if (points.geometry.boundingBox) {
+            groundZLocal = points.geometry.boundingBox.min.z;
+          }
+        }
+
+        const boundingSphere = points.geometry.boundingSphere;
+        const sceneRadius = boundingSphere ? (boundingSphere.radius || 1) : 1;
+
         const baseMaterial = points.material as THREE.PointsMaterial;
         
         // --- 1. Original Material ---
@@ -434,7 +503,48 @@ export default function PCDViewer({ url }: PCDViewerProps) {
         glowMat.toneMapped = false; // CRITICAL: Prevents ACES tone mapping from desaturating bright blue into pure white
         glowMaterialRef.current = glowMat;
 
-        const boundingSphere = points.geometry.boundingSphere;
+        // --- 3. Reflection Material ---
+        const reflMat = glowMat.clone();
+        reflMat.opacity = pointOpacity * 0.4;
+        
+        // Add depth fade to reflection shader
+        reflMat.onBeforeCompile = (shader) => {
+          shader.uniforms.groundZLocal = { value: groundZLocal };
+          shader.uniforms.sceneScale = { value: sceneRadius };
+          shader.vertexShader = shader.vertexShader.replace(
+            "void main() {",
+            `varying float vLocalZ;
+             void main() {
+               vLocalZ = position.z;
+            `
+          );
+          shader.fragmentShader = shader.fragmentShader.replace(
+            "void main() {",
+            `uniform float groundZLocal;
+             uniform float sceneScale;
+             varying float vLocalZ;
+             void main() {
+              vec2 cxy = 2.0 * gl_PointCoord - 1.0;
+              float r = length(cxy);
+              if (r > 1.0) discard;
+            `,
+          );
+          shader.fragmentShader = shader.fragmentShader.replace(
+            '#include <alphatest_fragment>',
+            `#include <alphatest_fragment>
+             // Soft circular glow for blurry reflection
+             float intensity = exp(-r * 2.5);
+             
+             // Fade out based on local Z position (deeper = more transparent)
+             float depth = vLocalZ - groundZLocal;
+             float depthFade = exp(-max(depth, 0.0) * (5.0 / sceneScale));
+             
+             diffuseColor.a *= intensity * depthFade;
+            `
+          );
+        };
+        reflectionMaterialRef.current = reflMat;
+
         if (boundingSphere) {
           const radius = boundingSphere.radius || 1;
 
@@ -463,7 +573,7 @@ export default function PCDViewer({ url }: PCDViewerProps) {
         points.rotation.x = -Math.PI / 2;
         scene.add(points);
 
-        // --- Calculate Bounding Box for the Moving Icon Path ---
+        // --- Calculate Bounding Box ---
         points.updateMatrixWorld(true);
         const box = new THREE.Box3().setFromObject(points);
         const center = new THREE.Vector3();
@@ -471,12 +581,40 @@ export default function PCDViewer({ url }: PCDViewerProps) {
         const size = new THREE.Vector3();
         box.getSize(size);
 
-        const bottomY = box.min.y;
+        // Convert local ground Z to world Y
+        points.geometry.computeBoundingBox();
+        const localMinZ = points.geometry.boundingBox ? points.geometry.boundingBox.min.z : 0;
+        const zOffset = groundZLocal - localMinZ;
+        const groundWorldY = box.min.y + zOffset;
+
+        // --- Create Reflection Points (Subsampled for performance) ---
+        const sampleRate = 5; // Use 20% of points for a denser, smoother reflection
+        const refPtCount = Math.floor(ptCount / sampleRate);
+        const refPositions = new Float32Array(refPtCount * 3);
+
+        for (let i = 0; i < refPtCount; i++) {
+          refPositions[i * 3] = positions[i * sampleRate * 3];
+          refPositions[i * 3 + 1] = positions[i * sampleRate * 3 + 1];
+          refPositions[i * 3 + 2] = positions[i * sampleRate * 3 + 2];
+        }
+
+        const refGeo = new THREE.BufferGeometry();
+        refGeo.setAttribute('position', new THREE.BufferAttribute(refPositions, 3));
+
+        const reflectionPoints = new THREE.Points(refGeo, reflMat);
+        reflectionPoints.rotation.x = -Math.PI / 2;
+        reflectionPoints.scale.z = -1; // Exact mirror
+        reflectionPoints.position.y = groundWorldY * 2; // Align using detected ground
+        reflectionPoints.visible = displayModeRef.current === 'glow' && reflectionEnabled;
+        scene.add(reflectionPoints);
+        reflectionPointsRef.current = reflectionPoints;
+
+        // --- Moving Icon Path ---
         const pathRadius = (Math.max(size.x, size.z) / 2) * 1.1; // 10% wider than the mode
         pathParamsRef.current = {
           centerX: center.x,
           centerZ: center.z,
-          y: bottomY,
+          y: groundWorldY,
           radius: pathRadius,
         };
 
@@ -509,7 +647,7 @@ export default function PCDViewer({ url }: PCDViewerProps) {
           trajPoints.push(
             new THREE.Vector3(
               center.x + pathRadius * Math.cos(angle),
-              bottomY,
+              groundWorldY,
               center.z + pathRadius * Math.sin(angle),
             ),
           );
@@ -612,8 +750,13 @@ export default function PCDViewer({ url }: PCDViewerProps) {
         scene.remove(pointsRef.current);
         pointsRef.current.geometry.dispose();
       }
+      if (reflectionPointsRef.current) {
+        scene.remove(reflectionPointsRef.current);
+        reflectionPointsRef.current.geometry.dispose();
+      }
       if (originalMaterialRef.current) originalMaterialRef.current.dispose();
       if (glowMaterialRef.current) glowMaterialRef.current.dispose();
+      if (reflectionMaterialRef.current) reflectionMaterialRef.current.dispose();
 
       if (iconRef.current) {
         scene.remove(iconRef.current);
@@ -850,8 +993,18 @@ export default function PCDViewer({ url }: PCDViewerProps) {
                 step="0.01"
                 value={pointOpacity}
                 onChange={(e) => setPointOpacity(parseFloat(e.target.value))}
-                className="w-full accent-indigo-500"
+                className="w-full accent-indigo-500 mb-4"
               />
+              
+              <label className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={reflectionEnabled}
+                  onChange={(e) => setReflectionEnabled(e.target.checked)}
+                  className="accent-indigo-500 rounded"
+                />
+                Enable Water Reflection
+              </label>
             </>
           )}
         </div>
