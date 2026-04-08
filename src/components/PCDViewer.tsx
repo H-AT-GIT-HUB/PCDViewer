@@ -5,6 +5,7 @@ import { PCDLoader } from "three/examples/jsm/loaders/PCDLoader.js";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
+import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 
 interface PCDViewerProps {
@@ -32,9 +33,9 @@ export default function PCDViewer({ url }: PCDViewerProps) {
   const [edlStrength, setEdlStrength] = useState<number>(5);
   const [edlRadius, setEdlRadius] = useState<number>(2);
 
-  // Display Mode States
-  const [displayMode, setDisplayMode] = useState<'original' | 'glow'>('glow');
-  const [pointOpacity, setPointOpacity] = useState<number>(0.05);
+  // Bloom States
+  const [bloomEnabled, setBloomEnabled] = useState<boolean>(true);
+  const [bloomStrength, setBloomStrength] = useState<number>(1.2);
 
   // Moving Icon States
   const [showIcon, setShowIcon] = useState<boolean>(false);
@@ -50,9 +51,10 @@ export default function PCDViewer({ url }: PCDViewerProps) {
 
   // Refs for Three.js objects
   const pointsRef = useRef<THREE.Points | null>(null);
-  const originalMaterialRef = useRef<THREE.PointsMaterial | null>(null);
-  const glowMaterialRef = useRef<THREE.PointsMaterial | null>(null);
+  const materialRef = useRef<THREE.PointsMaterial | null>(null);
+  const reflectionMaterialRef = useRef<THREE.PointsMaterial | null>(null);
   const edlPassRef = useRef<any>(null);
+  const bloomPassRef = useRef<any>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
 
   // Refs for Moving Icon
@@ -72,7 +74,6 @@ export default function PCDViewer({ url }: PCDViewerProps) {
   const isAddingLabelRef = useRef(isAddingLabel);
   const annotationsRef = useRef(annotations);
   const selectedAnnotationRef = useRef(selectedAnnotation);
-  const displayModeRef = useRef(displayMode);
 
   // Sync states to refs
   useEffect(() => {
@@ -90,17 +91,14 @@ export default function PCDViewer({ url }: PCDViewerProps) {
   useEffect(() => {
     selectedAnnotationRef.current = selectedAnnotation;
   }, [selectedAnnotation]);
-  useEffect(() => {
-    displayModeRef.current = displayMode;
-  }, [displayMode]);
 
   // Update point size dynamically
   useEffect(() => {
-    if (originalMaterialRef.current) {
-      originalMaterialRef.current.size = pointSize;
+    if (materialRef.current) {
+      materialRef.current.size = pointSize;
     }
-    if (glowMaterialRef.current) {
-      glowMaterialRef.current.size = pointSize;
+    if (reflectionMaterialRef.current) {
+      reflectionMaterialRef.current.size = pointSize * 2.5;
     }
   }, [pointSize]);
 
@@ -113,19 +111,13 @@ export default function PCDViewer({ url }: PCDViewerProps) {
     }
   }, [edlEnabled, edlStrength, edlRadius]);
 
-  // Update Point Opacity dynamically
+  // Update Bloom parameters dynamically
   useEffect(() => {
-    if (glowMaterialRef.current) {
-      glowMaterialRef.current.opacity = pointOpacity;
+    if (bloomPassRef.current) {
+      bloomPassRef.current.enabled = bloomEnabled;
+      bloomPassRef.current.strength = bloomStrength;
     }
-  }, [pointOpacity]);
-
-  // Swap materials dynamically
-  useEffect(() => {
-    if (pointsRef.current && originalMaterialRef.current && glowMaterialRef.current) {
-      pointsRef.current.material = displayMode === 'original' ? originalMaterialRef.current : glowMaterialRef.current;
-    }
-  }, [displayMode]);
+  }, [bloomEnabled, bloomStrength]);
 
   // Update Background Color dynamically
   useEffect(() => {
@@ -359,6 +351,9 @@ export default function PCDViewer({ url }: PCDViewerProps) {
       if (edlPassRef.current) {
         edlPassRef.current.uniforms.screenSize.value.set(width, height);
       }
+      if (bloomPassRef.current) {
+        bloomPassRef.current.resolution.set(width, height);
+      }
     };
     window.addEventListener("resize", handleResize);
 
@@ -377,45 +372,27 @@ export default function PCDViewer({ url }: PCDViewerProps) {
         points.geometry.center();
         points.geometry.computeBoundingSphere();
 
-        const baseMaterial = points.material as THREE.PointsMaterial;
-        
-        // --- 1. Original Material ---
-        const origMat = baseMaterial.clone();
-        if (!points.geometry.hasAttribute('color')) {
-          origMat.color = new THREE.Color(0xffffff);
-        }
-        originalMaterialRef.current = origMat;
+        const material = points.material as THREE.PointsMaterial;
+        materialRef.current = material;
 
-        // --- 2. Glow Material ---
-        const glowMat = baseMaterial.clone();
-        // Make points circular with soft edges for glowing effect
-        glowMat.onBeforeCompile = (shader) => {
+        // Make points circular instead of square for better visual quality
+        material.onBeforeCompile = (shader) => {
           shader.fragmentShader = shader.fragmentShader.replace(
             "void main() {",
             `void main() {
               vec2 cxy = 2.0 * gl_PointCoord - 1.0;
-              float r = length(cxy);
-              if (r > 1.0) discard;
+              if (dot(cxy, cxy) > 1.0) discard;
             `,
-          );
-          shader.fragmentShader = shader.fragmentShader.replace(
-            '#include <alphatest_fragment>',
-            `#include <alphatest_fragment>
-             // Exponential falloff for a realistic light glow profile
-             float intensity = exp(-r * 3.0);
-             diffuseColor.a *= intensity;
-            `
           );
         };
 
-        glowMat.vertexColors = false;
-        glowMat.color = new THREE.Color(0x0066ff); // Deep neon blue
-        glowMat.transparent = true;
-        glowMat.opacity = pointOpacity;
-        glowMat.depthWrite = false;
-        glowMat.blending = THREE.AdditiveBlending; // Restore Additive Blending for the true glow effect
-        glowMat.toneMapped = false; // CRITICAL: Prevents ACES tone mapping from desaturating bright blue into pure white
-        glowMaterialRef.current = glowMat;
+        material.vertexColors = false;
+        material.color = new THREE.Color(0x0066ff);
+        material.transparent = true;
+        material.opacity = 0.1;
+        material.blending = THREE.AdditiveBlending;
+        material.depthWrite = false;
+        material.toneMapped = false; // CRITICAL: Prevents ACES tone mapping from desaturating bright blue into pure white
 
         const boundingSphere = points.geometry.boundingSphere;
         if (boundingSphere) {
@@ -435,14 +412,13 @@ export default function PCDViewer({ url }: PCDViewerProps) {
           controls.target.set(0, 0, 0);
           controls.maxDistance = radius * 50;
 
+          // const defaultSize = radius * 0.005;
           const defaultSize = 0.01;
           setBasePointSize(defaultSize);
           setPointSize(defaultSize);
-          origMat.size = defaultSize;
-          glowMat.size = defaultSize;
+          material.size = defaultSize;
         }
 
-        points.material = displayModeRef.current === 'original' ? origMat : glowMat;
         points.rotation.x = -Math.PI / 2;
         scene.add(points);
 
@@ -455,7 +431,7 @@ export default function PCDViewer({ url }: PCDViewerProps) {
         box.getSize(size);
 
         const bottomY = box.min.y;
-        const pathRadius = (Math.max(size.x, size.z) / 2) * 1.1; // 10% wider than the model
+        const pathRadius = (Math.max(size.x, size.z) / 2) * 1.1; // 10% wider than the mode
         pathParamsRef.current = {
           centerX: center.x,
           centerZ: center.z,
@@ -594,9 +570,12 @@ export default function PCDViewer({ url }: PCDViewerProps) {
       if (pointsRef.current) {
         scene.remove(pointsRef.current);
         pointsRef.current.geometry.dispose();
+        if (Array.isArray(pointsRef.current.material)) {
+          pointsRef.current.material.forEach((m) => m.dispose());
+        } else {
+          pointsRef.current.material.dispose();
+        }
       }
-      if (originalMaterialRef.current) originalMaterialRef.current.dispose();
-      if (glowMaterialRef.current) glowMaterialRef.current.dispose();
 
       if (iconRef.current) {
         scene.remove(iconRef.current);
@@ -789,24 +768,6 @@ export default function PCDViewer({ url }: PCDViewerProps) {
 
         <div className="border-t border-zinc-800 pt-3">
           <label className="text-xs text-zinc-300 flex justify-between mb-2">
-            <span>Display Mode</span>
-          </label>
-          <div className="flex bg-zinc-800 rounded p-1 mb-3">
-            <button
-              className={`flex-1 text-xs py-1.5 rounded transition-colors ${displayMode === 'original' ? 'bg-indigo-600 text-white' : 'text-zinc-400 hover:text-zinc-200'}`}
-              onClick={() => setDisplayMode('original')}
-            >
-              Original Color
-            </button>
-            <button
-              className={`flex-1 text-xs py-1.5 rounded transition-colors ${displayMode === 'glow' ? 'bg-indigo-600 text-white' : 'text-zinc-400 hover:text-zinc-200'}`}
-              onClick={() => setDisplayMode('glow')}
-            >
-              Glow Effect
-            </button>
-          </div>
-
-          <label className="text-xs text-zinc-300 flex justify-between mb-2">
             <span>Point Size</span>
             <span>{pointSize.toFixed(4)}</span>
           </label>
@@ -817,26 +778,8 @@ export default function PCDViewer({ url }: PCDViewerProps) {
             step={basePointSize * 0.1}
             value={pointSize}
             onChange={(e) => setPointSize(parseFloat(e.target.value))}
-            className="w-full accent-indigo-500 mb-3"
+            className="w-full accent-indigo-500"
           />
-          
-          {displayMode === 'glow' && (
-            <>
-              <label className="text-xs text-zinc-300 flex justify-between mb-2">
-                <span>Glow Opacity</span>
-                <span>{pointOpacity.toFixed(3)}</span>
-              </label>
-              <input
-                type="range"
-                min="0.001"
-                max="0.2"
-                step="0.001"
-                value={pointOpacity}
-                onChange={(e) => setPointOpacity(parseFloat(e.target.value))}
-                className="w-full accent-indigo-500"
-              />
-            </>
-          )}
         </div>
 
         <div className="border-t border-zinc-800 pt-3">
